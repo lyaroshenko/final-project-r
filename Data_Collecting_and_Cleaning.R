@@ -6,15 +6,15 @@ con <- dbConnect(duckdb::duckdb())
 
 dbExecute(con, "INSTALL httpfs; LOAD httpfs; SET enable_http_metadata_cache=true;")
 
-dbExecute(con, "CREATE TABLE taxi_jan AS SELECT * FROM read_parquet('C:\\Users\\sveti\\Desktop\\final_project\\final-project-r\\data\\taxi_trip_data_jan_2023.parquet')")
-dbExecute(con, "CREATE TABLE taxi_feb AS SELECT * FROM read_parquet('C:\\Users\\sveti\\Desktop\\final_project\\final-project-r\\data\\taxi_trip_data_feb_2023.parquet')")
+dbExecute(con, "CREATE TABLE taxi_jan AS SELECT * FROM read_parquet('D://RProjects//r4ds-2025//Final_Project//final-project-r//data//taxi_trip_data_jan_2023.parquet')")
+dbExecute(con, "CREATE TABLE taxi_feb AS SELECT * FROM read_parquet('D://RProjects//r4ds-2025//Final_Project//final-project-r//data//taxi_trip_data_feb_2023.parquet')")
 dbExecute(con, "SET unsafe_disable_etag_checks = true;")
 dbExecute(con, "CREATE TABLE traffic_speed AS SELECT * FROM read_csv_auto('https://data.cityofnewyork.us/resource/i4gi-tjb9.csv')")
 dbExecute(con, "CREATE TABLE crash_data AS SELECT * FROM read_csv_auto('https://data.cityofnewyork.us/resource/h9gi-nx95.csv')")
 dbExecute(con, "CREATE TABLE taxi_all AS SELECT * FROM taxi_jan UNION ALL SELECT * FROM taxi_feb")
 dbExecute(con, "INSTALL json")
 dbExecute(con, "LOAD json")
-dbExecute(con, "CREATE TABLE taxi_zones AS SELECT * FROM read_json_auto('C:\\Users\\sveti\\Desktop\\final_project\\final-project-r\\data\\taxi_zones.geojson')")
+dbExecute(con, "CREATE TABLE taxi_zones AS SELECT * FROM read_json_auto('D://RProjects//r4ds-2025//Final_Project//final-project-r//data//taxi_zones.geojson')")
 
 dbGetQuery(con, "PRAGMA table_info('traffic_speed')")
 
