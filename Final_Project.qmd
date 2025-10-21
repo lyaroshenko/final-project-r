@@ -1,0 +1,211 @@
+---
+title: "fp"
+format: html
+editor: visual
+echo: false
+message: false
+warning: false
+---
+```{r}
+library(duckdb)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(scales)
+library(sf)
+con <- dbConnect(duckdb::duckdb())
+
+invisible(dbExecute(con, "INSTALL httpfs; LOAD httpfs; SET enable_http_metadata_cache=true;"))
+
+invisible(dbExecute(con, "CREATE TABLE taxi_jan AS SELECT * FROM read_parquet('C:\\Users\\sveti\\Desktop\\final_project\\final-project-r\\data\\taxi_trip_data_jan_2023.parquet')"))
+invisible(dbExecute(con, "CREATE TABLE taxi_feb AS SELECT * FROM read_parquet('C:\\Users\\sveti\\Desktop\\final_project\\final-project-r\\data\\taxi_trip_data_feb_2023.parquet')"))
+invisible(dbExecute(con, "CREATE TABLE taxi_all AS SELECT * FROM taxi_jan UNION ALL SELECT * FROM taxi_feb"))
+
+invisible(dbExecute(con, "INSTALL json; LOAD json;"))
+invisible(dbExecute(con, "CREATE TABLE taxi_zones AS SELECT * FROM read_json_auto('C:\\Users\\sveti\\Desktop\\final_project\\final-project-r\\data\\taxi_zones.geojson')"))
+
+invisible(dbExecute(con, "CREATE TABLE crash_data AS SELECT * FROM read_csv_auto('https://data.cityofnewyork.us/resource/h9gi-nx95.csv')"))
+
+invisible(dbExecute(con, "
+  CREATE TABLE flattened_zones AS
+  SELECT 
+    f.value.properties.locationid::INT AS location_id,
+    f.value.properties.zone AS zone,
+    f.value.properties.borough AS borough
+  FROM taxi_zones,
+  UNNEST(taxi_zones.features) AS f(value)
+"))
+
+invisible(dbExecute(con, "
+  CREATE TABLE taxi_enriched AS
+  SELECT t.*, z.zone AS pickup_zone, z.borough AS pickup_borough
+  FROM taxi_all t
+  LEFT JOIN flattened_zones z
+  ON t.PULocationID = z.location_id
+"))
+
+trips_by_hour_borough <- dbGetQuery(con, "
+  SELECT 
+    HOUR(tpep_pickup_datetime) AS pickup_hour,
+    pickup_borough,
+    COUNT(*) AS trip_count
+  FROM taxi_enriched
+  WHERE 
+    trip_distance > 0 
+    AND trip_distance < 100
+    AND total_amount > 0 
+    AND total_amount < 500 
+    AND pickup_borough IN ('Manhattan', 'Brooklyn', 'Queens', 'Bronx')
+  GROUP BY pickup_hour, pickup_borough
+")
+
+print(
+  ggplot(trips_by_hour_borough, aes(x = pickup_hour, y = trip_count, color = pickup_borough)) +
+    geom_line(size = 1.2) +
+    geom_point(size = 2) +
+    scale_x_continuous(breaks = seq(0, 24, by = 4), name = "hour of the day") +
+    scale_y_continuous(name = "Total number of trips", labels = label_number()) +
+    facet_wrap(~ pickup_borough, scales = "free_y") +
+    labs(
+      title = "Number of taxi trips in New York per year by day and borough",
+      subtitle = "Based on data of timeline Jan-Feb 2023",
+      color = "Area"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(legend.position = "none")
+)
+
+crashes_heatmap_data <- dbGetQuery(con, "
+  SELECT 
+    DAYNAME(crash_date) AS day_of_week,
+    HOUR(crash_time) AS hour_of_day,
+    COUNT(*) AS crash_count
+  FROM crash_data
+  WHERE crash_date IS NOT NULL AND crash_time IS NOT NULL
+  GROUP BY 1, 2
+")
+
+day_levels <- c("Sunday", "Saturday", "Friday", "Thursday", "Wednesday", "Tuesday", "Monday")
+
+crashes_heatmap_data <- crashes_heatmap_data |> 
+  mutate(
+    day_of_week = factor(day_of_week, levels = day_levels)
+  )
+
+print(
+  ggplot(crashes_heatmap_data, aes(x = hour_of_day, y = day_of_week, fill = crash_count)) +
+    geom_tile(color = "white", size = 0.1) +
+    scale_fill_gradient(low = "white", high = "red", name = "Number of accidents") +
+    scale_x_continuous(breaks = seq(0, 24, by = 2), name = "Hour of the day") +
+    scale_y_discrete(name = "Day of the week") +
+    labs(
+      title = "Concentration of accidents in NYC",
+      subtitle = "By hour of the day and the day of the week"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      legend.position = "bottom",
+      panel.grid = element_blank()
+    )
+)
+
+top_causes_data <- dbGetQuery(con, "
+  SELECT 
+    contributing_factor_vehicle_1 AS cause,
+    SUM(number_of_persons_injured + number_of_persons_killed) AS total_victims
+  FROM crash_data
+  WHERE 
+    cause IS NOT NULL 
+    AND cause != 'Unspecified'
+    AND (number_of_persons_injured > 0 OR number_of_persons_killed > 0)
+  GROUP BY 1
+  ORDER BY 2 DESC
+  LIMIT 10
+")
+
+print(
+  ggplot(top_causes_data, aes(x = total_victims, y = reorder(cause, total_victims))) +
+    geom_col(fill = "#B71C1C") +
+    scale_x_continuous(name = "Total number of victims)", labels = label_number()) +
+    scale_y_discrete(name = "eason") +
+    labs(
+      title = "Top 10 causes of accidents that resulted in injuries",
+      subtitle = "Based on NYC traffic accident data"
+    ) +
+    theme_minimal(base_size = 14)
+)
+
+crashes_by_borough <- dbGetQuery(con, "
+  SELECT 
+    borough,
+    COUNT(*) AS crash_count
+  FROM crash_data
+  WHERE borough IS NOT NULL
+  GROUP BY 1
+  ORDER BY 2 DESC
+")
+
+print(
+  ggplot(crashes_by_borough, aes(x = reorder(borough, -crash_count), y = crash_count)) +
+    geom_col(aes(fill = borough)) +
+    scale_y_continuous(name = "Total Number of Accidents", labels = label_number()) +
+    scale_x_discrete(name = "Borough") +
+    labs(
+      title = "Total number of accidents by the area of NYC"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(legend.position = "none")
+)
+#| message: false
+#| warning: false
+analysis_data <- dbGetQuery(con, "
+  WITH taxi_metrics AS (SELECT 
+      HOUR(tpep_pickup_datetime) AS hour,
+      pickup_borough,
+      AVG(epoch(tpep_dropoff_datetime) - epoch(tpep_pickup_datetime)) / 60 AS avg_duration_min
+    FROM taxi_enriched
+    WHERE 
+      pickup_borough IN ('Manhattan', 'Brooklyn', 'Queens', 'Bronx')
+      AND (epoch(tpep_dropoff_datetime) - epoch(tpep_pickup_datetime)) / 60 < 120
+      AND (epoch(tpep_dropoff_datetime) - epoch(tpep_pickup_datetime)) > 0
+    GROUP BY 1, 2
+  ),
+  crash_metrics AS (
+    SELECT
+      HOUR(crash_time) AS hour,
+      UPPER(borough) AS upper_borough,
+      COUNT(*) AS crash_count
+    FROM crash_data
+    WHERE 
+      borough IS NOT NULL
+      AND crash_time IS NOT NULL
+    GROUP BY 1, 2
+  )
+  SELECT 
+    t.*,
+    c.crash_count
+  FROM taxi_metrics t
+  LEFT JOIN crash_metrics c
+    ON t.hour = c.hour AND UPPER(t.pickup_borough) = c.upper_borough
+
+")
+analysis_data <- analysis_data |> 
+  mutate(crash_count = ifelse(is.na(crash_count), 0, crash_count))
+
+print(
+  ggplot(analysis_data, aes(x = crash_count, y = avg_duration_min)) +
+    geom_point(aes(color = pickup_borough), alpha = 0.7, size = 3) +
+    geom_smooth(method = "lm", color = "black", formula = y ~ x) +
+    facet_wrap(~ pickup_borough, scales = "free") +
+    scale_x_continuous(name = "Number of accidents per hour") +
+    scale_y_continuous(name = "Average trip duration (min)") +
+    labs(
+      title = "Does the number of accidents affect the duration of taxi trips?",
+      subtitle = "Analysis by hour and district (Jan-Feb 2023)",
+      color = "Area"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(legend.position = "none")
+)
+invisible(dbDisconnect(con, shutdown = TRUE))
+```
